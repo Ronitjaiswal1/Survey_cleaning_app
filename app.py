@@ -230,25 +230,38 @@ if raw_df is not None and len(raw_df) > 0:
     st.session_state.report_images.append(("Missingness rates", miss_img))
 
     df = raw_df.copy()
-    if imp_strategy_num == "MissForest" and MISSFOREST_AVAILABLE:
-        mf = MissForest()
-        df[num_cols] = mf.fit_transform(df[num_cols])
-        log("Applied MissForest imputation.")
-    elif imp_strategy_num == "KNN" and num_cols:
-        imp = KNNImputer(n_neighbors=int(knn_neighbors))
-        df[num_cols] = imp.fit_transform(df[num_cols])
-        log("Applied KNN imputer.")
-    elif imp_strategy_num in {"mean", "median"}:
-        imp = SimpleImputer(strategy=imp_strategy_num)
-        df[num_cols] = imp.fit_transform(df[num_cols])
-        log(f"Applied {imp_strategy_num} imputer.")
+    # Robust numeric imputation with shape-safe assignment
+    try:
+        if imp_strategy_num == "MissForest" and MISSFOREST_AVAILABLE and len(num_cols) > 0:
+            mf = MissForest()
+            imputed = mf.fit_transform(df[num_cols])
+            df[num_cols] = pd.DataFrame(imputed, columns=list(num_cols), index=df.index)
+            log("Applied MissForest imputation.")
+        elif imp_strategy_num == "KNN" and len(num_cols) > 0:
+            imp = KNNImputer(n_neighbors=int(knn_neighbors))
+            imputed = imp.fit_transform(df[num_cols])
+            df[num_cols] = pd.DataFrame(imputed, columns=list(num_cols), index=df.index)
+            log("Applied KNN imputer.")
+        elif imp_strategy_num in {"mean", "median"} and len(num_cols) > 0:
+            imp = SimpleImputer(strategy=imp_strategy_num)
+            imputed = imp.fit_transform(df[num_cols])
+            df[num_cols] = pd.DataFrame(imputed, columns=list(num_cols), index=df.index)
+            log(f"Applied {imp_strategy_num} imputer.")
+    except Exception as e:
+        st.warning(f"Numeric imputation skipped due to error: {e}")
 
     if imp_strategy_cat == "mode":
         for c in cat_cols:
             if df[c].isna().any():
-                mode_val = df[c].mode(dropna=True)[0]
-                df[c] = df[c].fillna(mode_val)
-                log(f"Imputed categorical {c} with mode.")
+                m = df[c].mode(dropna=True)
+                if len(m) > 0:
+                    mode_val = m.iloc[0]
+                    df[c] = df[c].fillna(mode_val)
+                    log(f"Imputed categorical {c} with mode.")
+                else:
+                    # If column is all-NA, fill with a placeholder string
+                    df[c] = df[c].fillna("Unknown")
+                    log(f"Imputed categorical {c} with placeholder 'Unknown'.")
 
     if outlier_method == "zscore":
         for c in num_cols:
@@ -284,10 +297,14 @@ if raw_df is not None and len(raw_df) > 0:
     if cat_cols:
         rows = []
         for c in cat_cols:
-            topv = clean_df[c].value_counts().index[0]
+            vc = clean_df[c].dropna().value_counts()
+            if vc.empty:
+                continue
+            topv = vc.index[0]
             p, lo, hi = weighted_proportion_ci95(clean_df[c], w, topv)
             rows.append({"metric": c, "category": topv, "prop": p, "ci95_lo": lo, "ci95_hi": hi})
-        st.dataframe(pd.DataFrame(rows))
+        if rows:
+            st.dataframe(pd.DataFrame(rows))
 
     st.subheader("Visualizations")
     for c in num_cols[:3]:
